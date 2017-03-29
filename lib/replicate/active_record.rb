@@ -77,10 +77,10 @@ module Replicate
         options = reflection.options
         if options[:polymorphic]
           reference_class =
-            if ::ActiveRecord::VERSION::MAJOR == 3 && ::ActiveRecord::VERSION::MINOR > 0
-              attributes[reflection.foreign_type]
-            else
+            if attributes[options[:foreign_type]]
               attributes[options[:foreign_type]]
+            else
+              attributes[reflection.foreign_type]
             end
           return if reference_class.nil?
 
