@@ -307,10 +307,10 @@ module Replicate
           def instance.run_callbacks(*args); yield if block_given?; end
 
           # AR 3.0.x
-          def instance._run_save_callbacks(*args); yield; end
-          def instance._run_create_callbacks(*args); yield; end
-          def instance._run_update_callbacks(*args); yield; end
-          def instance._run_commit_callbacks(*args); yield; end
+          def instance._run_save_callbacks(*args); yield if block_given?; end
+          def instance._run_create_callbacks(*args); yield if block_given?; end
+          def instance._run_update_callbacks(*args); yield if block_given?; end
+          def instance._run_commit_callbacks(*args); yield if block_given?; end
         else
           # AR 2.x
           def instance.callback(*args)
