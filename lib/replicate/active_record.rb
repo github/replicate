@@ -283,7 +283,7 @@ module Replicate
       def create_or_update_replicant(instance, attributes)
         # write replicated attributes to the instance
         attributes.each do |key, value|
-          next if key == primary_key and not replicate_id
+          next if skip_attribute?(instance.class, key)
           instance.send :write_attribute, key, value
         end
 
@@ -296,6 +296,10 @@ module Replicate
         end
 
         [instance.id, instance]
+      end
+
+      def skip_attribute?(klass, key) # :nodoc:
+        (key == primary_key && !replicate_id) || klass.replicate_omit_attributes.include?(key.to_sym)
       end
 
       # Disable all callbacks on an ActiveRecord::Base instance. Only the
