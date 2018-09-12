@@ -11,7 +11,7 @@ module Replicate
   #
   class Object
     attr_accessor :id
-    attr_accessor :attributes
+    attr_reader :attributes
 
     def initialize(id=nil, attributes={})
       attributes, id = id, nil if id.is_a?(Hash)

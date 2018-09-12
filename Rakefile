@@ -1,24 +1,24 @@
 require 'rbconfig'
 require 'rake/clean'
+require 'rake/testtask'
 task :default => [:setup, :test]
 
 vendor_dir   = './vendor'
 ruby_version = RbConfig::CONFIG['ruby_version']
 ENV['GEM_HOME'] = "#{vendor_dir}/#{ruby_version}"
+ENV['MT_NO_PLUGINS'] = "true"
 
 desc "Install gem dependencies for development"
 task :setup => 'setup:latest' do
   verbose(false) do
     gem_install 'sqlite3'
-    gem_install 'test_after_commit'
   end
 end
 
-desc "Run tests"
-task :test do
-  ENV['RUBYOPT'] = [ENV['RUBYOPT'], 'rubygems'].compact.join(' ')
-  ENV['RUBYLIB'] = ['lib', ENV['RUBYLIB']].compact.join(':')
-  sh "testrb test/*_test.rb", :verbose => false
+Rake::TestTask.new do |t|
+  t.libs << "lib" << "test"
+  t.test_files = FileList["test/*_test.rb"]
+  t.verbose = true
 end
 CLEAN.include 'test/db'
 
@@ -28,9 +28,7 @@ task :build do
 end
 
 # supported activerecord gem versions
-AR_VERSIONS = []
-AR_VERSIONS.concat %w[2.2.3 2.3.5] if RUBY_VERSION < '1.9'
-AR_VERSIONS.concat %w[2.3.14 3.0.10 3.1.0 3.2.0]
+AR_VERSIONS = %w(5.0.7 5.1.6 5.2.1)
 
 desc "Run unit tests under all supported AR versions"
 task 'test:all' => 'setup:all' do
