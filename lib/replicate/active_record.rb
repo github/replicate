@@ -189,7 +189,12 @@ module Replicate
       # times to add associations.
       def replicate_associations(*names)
         self.replicate_associations += names if names.any?
-        @replicate_associations || superclass.replicate_associations
+
+        if defined?(@replicate_associations) && @replicate_associations
+          @replicate_associations
+        else
+          superclass.replicate_associations
+        end
       end
 
       # Set the list of association names to dump to the specific set of values.
@@ -203,7 +208,12 @@ module Replicate
       # attribute_names - Macro style setter.
       def replicate_natural_key(*attribute_names)
         self.replicate_natural_key = attribute_names if attribute_names.any?
-        @replicate_natural_key || superclass.replicate_natural_key
+
+        if defined?(@replicate_natural_key) && @replicate_natural_key
+          @replicate_natural_key
+        else
+          superclass.replicate_natural_key
+        end
       end
 
       # Set the compound key used to locate existing objects for update when
@@ -218,7 +228,12 @@ module Replicate
       # When not set, replicated objects will be created with new id.
       def replicate_id(boolean=nil)
         self.replicate_id = boolean unless boolean.nil?
-        @replicate_id.nil? ? superclass.replicate_id : @replicate_id
+
+        if defined?(@replicate_id) && !@replicate_id.nil?
+          @replicate_id
+        else
+          superclass.replicate_id
+        end
       end
 
       # Set flag for replicating original id.
@@ -233,7 +248,12 @@ module Replicate
       # attribute_names - Macro style setter.
       def replicate_omit_attributes(*attribute_names)
         self.replicate_omit_attributes = attribute_names if attribute_names.any?
-        @replicate_omit_attributes || superclass.replicate_omit_attributes
+
+        if defined?(@replicate_omit_attributes) && @replicate_omit_attributes
+          @replicate_omit_attributes
+        else
+          superclass.replicate_omit_attributes
+        end
       end
 
       # Set which, if any, attributes should not be dumped. Also works for
@@ -269,11 +289,7 @@ module Replicate
         replicate_natural_key.each do |attribute_name|
           conditions[attribute_name] = attributes[attribute_name.to_s]
         end
-        if ::ActiveRecord::VERSION::MAJOR >= 4
-          where(conditions).first
-        else
-          find(:first, :conditions => conditions)
-        end
+        where(conditions).first
       end
 
       # Update an AR object's attributes and persist to the database without
@@ -289,11 +305,7 @@ module Replicate
 
         # save the instance bypassing all callbacks and validations
         replicate_disable_callbacks instance
-        if ::ActiveRecord::VERSION::MAJOR >= 3
-          instance.save :validate => false
-        else
-          instance.save false
-        end
+        instance.save :validate => false
 
         [instance.id, instance]
       end
@@ -306,23 +318,14 @@ module Replicate
       # instance is effected. There is no way to re-enable callbacks once
       # they've been disabled on an object.
       def replicate_disable_callbacks(instance)
-        if ::ActiveRecord::VERSION::MAJOR >= 3
-          # AR 3.1.x, 3.2.x
-          def instance.run_callbacks(*args); yield if block_given?; end
+        # AR 5.1 and later only need this method
+        def instance.run_callbacks(*args); yield if block_given?; end
 
-          # AR 3.0.x
-          def instance._run_save_callbacks(*args); yield if block_given?; end
-          def instance._run_create_callbacks(*args); yield if block_given?; end
-          def instance._run_update_callbacks(*args); yield if block_given?; end
-          def instance._run_commit_callbacks(*args); yield if block_given?; end
-        else
-          # AR 2.x
-          def instance.callback(*args)
-          end
-          def instance.record_timestamps
-            false
-          end
-        end
+        # AR 5.0 runs individual callbacks this way
+        def instance._run_save_callbacks(*args); yield if block_given?; end
+        def instance._run_create_callbacks(*args); yield if block_given?; end
+        def instance._run_update_callbacks(*args); yield if block_given?; end
+        def instance._run_commit_callbacks(*args); yield if block_given?; end
       end
 
     end

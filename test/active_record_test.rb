@@ -1,6 +1,3 @@
-require 'test/unit'
-require 'stringio'
-
 # require a specific AR version.
 version = ENV['AR_VERSION']
 gem 'activerecord', "~> #{version}" if version
@@ -10,13 +7,12 @@ version = ActiveRecord::VERSION::STRING
 warn "Using activerecord #{version}"
 
 # replicate must be loaded after AR
-require 'replicate'
+require 'test_helper'
 
 # create the sqlite db on disk
 dbfile = File.expand_path('../db', __FILE__)
 File.unlink dbfile if File.exist?(dbfile)
 ActiveRecord::Base.establish_connection(:adapter => "sqlite3", :database => dbfile)
-require 'test_after_commit'
 
 # load schema
 ActiveRecord::Migration.verbose = false
@@ -39,15 +35,13 @@ ActiveRecord::Schema.define do
     t.datetime "created_at"
   end
 
-  if version[0,3] > '2.2'
-    create_table "domains", :force => true do |t|
-      t.string "host"
-    end
+  create_table "domains", :force => true do |t|
+    t.string "host"
+  end
 
-    create_table "web_pages", :force => true do |t|
-      t.string "url"
-      t.string "domain_host"
-    end
+  create_table "web_pages", :force => true do |t|
+    t.string "url"
+    t.string "domain_host"
   end
 
   create_table "notes", :force => true do |t|
@@ -61,7 +55,7 @@ end
 # models
 class User < ActiveRecord::Base
   has_one  :profile, :dependent => :destroy
-  has_many :emails,  :dependent => :destroy, :order => 'id'
+  has_many :emails,  -> { order(:id) }, :dependent => :destroy
   has_many :notes,   :as => :notable
   replicate_natural_key :login
 end
@@ -76,14 +70,12 @@ class Email < ActiveRecord::Base
   replicate_natural_key :user_id, :email
 end
 
-if version[0,3] > '2.2'
-  class WebPage < ActiveRecord::Base
-    belongs_to :domain, :foreign_key => 'domain_host', :primary_key => 'host'
-  end
+class WebPage < ActiveRecord::Base
+  belongs_to :domain, :foreign_key => 'domain_host', :primary_key => 'host'
+end
 
-  class Domain < ActiveRecord::Base
-    replicate_natural_key :host
-  end
+class Domain < ActiveRecord::Base
+  replicate_natural_key :host
 end
 
 class Note < ActiveRecord::Base
@@ -96,30 +88,35 @@ end
 
 # The test case loads some fixture data once and uses transaction rollback to
 # reset fixture state for each test's setup.
-class ActiveRecordTest < Test::Unit::TestCase
+class ActiveRecordTest < Minitest::Test
+
   def setup
-    self.class.fixtures
-    ActiveRecord::Base.connection.increment_open_transactions
-    ActiveRecord::Base.connection.begin_db_transaction
+    setup_test_data
 
     @rtomayko = User.find_by_login('rtomayko')
     @kneath   = User.find_by_login('kneath')
     @tmm1     = User.find_by_login('tmm1')
 
+    # Reset all replicate options set in tests to keep
+    # from test setup leakage
+    User.replicate_id = false
     User.replicate_associations = []
+    User.replicate_omit_attributes = []
+    Profile.replicate_omit_attributes = []
 
     @dumper = Replicate::Dumper.new
     @loader = Replicate::Loader.new
   end
 
-  def teardown
-    ActiveRecord::Base.connection.rollback_db_transaction
-    ActiveRecord::Base.connection.decrement_open_transactions
-  end
+  def setup_test_data
+    User.delete_all
+    Profile.delete_all
+    Email.delete_all
+    Domain.delete_all
+    WebPage.delete_all
+    Note.delete_all
+    User::Namespaced.delete_all
 
-  def self.fixtures
-    return if @fixtures
-    @fixtures = true
     user = User.create! :login => 'rtomayko'
     user.create_profile :name => 'Ryan Tomayko', :homepage => 'http://tomayko.com'
     user.emails.create! :email => 'ryan@github.com'
@@ -132,10 +129,8 @@ class ActiveRecordTest < Test::Unit::TestCase
     user = User.create! :login => 'tmm1'
     user.create_profile :name => 'tmm1', :homepage => 'https://github.com/tmm1'
 
-    if defined?(Domain)
-      github = Domain.create! :host => 'github.com'
-      github_about_page = WebPage.create! :url => 'http://github.com/about', :domain => github
-    end
+    github = Domain.create! :host => 'github.com'
+    WebPage.create! :url => 'http://github.com/about', :domain => github
   end
 
   def test_extension_modules_loaded
@@ -176,8 +171,8 @@ class ActiveRecordTest < Test::Unit::TestCase
 
     assert_equal 2, objects.size
 
-    type, id, attrs, obj = objects.shift
-    assert_equal nil, attrs['created_at']
+    _type, _id, attrs, _obj = objects.shift
+    assert_nil attrs['created_at']
   end
 
   def test_omit_dumping_of_association
@@ -190,29 +185,27 @@ class ActiveRecordTest < Test::Unit::TestCase
 
     assert_equal 1, objects.size
 
-    type, id, attrs, obj = objects.shift
+    type, _id, _attrs, _obj = objects.shift
     assert_equal 'User', type
   end
 
-  if ActiveRecord::VERSION::STRING[0, 3] > '2.2'
-    def test_dump_and_load_non_standard_foreign_key_association
-      objects = []
-      @dumper.listen { |type, id, attrs, obj| objects << [type, id, attrs, obj] }
+  def test_dump_and_load_non_standard_foreign_key_association
+    objects = []
+    @dumper.listen { |type, id, attrs, obj| objects << [type, id, attrs, obj] }
 
-      github_about_page = WebPage.find_by_url('http://github.com/about')
-      assert_equal "github.com", github_about_page.domain.host
-      @dumper.dump github_about_page
+    github_about_page = WebPage.find_by_url('http://github.com/about')
+    assert_equal "github.com", github_about_page.domain.host
+    @dumper.dump github_about_page
 
-      WebPage.delete_all
-      Domain.delete_all
+    WebPage.delete_all
+    Domain.delete_all
 
-      # load everything back up
-      objects.each { |type, id, attrs, obj| @loader.feed type, id, attrs }
+    # load everything back up
+    objects.each { |type, id, attrs, obj| @loader.feed type, id, attrs }
 
-      github_about_page = WebPage.find_by_url('http://github.com/about')
-      assert_equal "github.com", github_about_page.domain_host
-      assert_equal "github.com", github_about_page.domain.host
-    end
+    github_about_page = WebPage.find_by_url('http://github.com/about')
+    assert_equal "github.com", github_about_page.domain_host
+    assert_equal "github.com", github_about_page.domain.host
   end
 
   def test_auto_dumping_has_one_associations
@@ -249,7 +242,7 @@ class ActiveRecordTest < Test::Unit::TestCase
 
     assert_equal 3, objects.size
 
-    type, id, attrs, obj = objects.shift
+    type, id, _attrs, _obj = objects.shift
     assert_equal 'User', type
     assert_equal rtomayko.id, id
 
@@ -333,7 +326,7 @@ class ActiveRecordTest < Test::Unit::TestCase
     objects = []
     @dumper.listen { |type, id, attrs, obj| objects << [type, id, attrs, obj] }
 
-    users = User.all(:conditions => {:login => %w[rtomayko kneath]})
+    users = User.where(:login => %w[rtomayko kneath]).all
     @dumper.dump users, :associations => [:emails], :omit => [:profile]
 
     assert_equal 5, objects.size
@@ -347,7 +340,7 @@ class ActiveRecordTest < Test::Unit::TestCase
     rtomayko = User.find_by_login('rtomayko')
     @dumper.dump rtomayko, :omit => [:created_at]
 
-    type, id, attrs, obj = objects.shift
+    type, _id, attrs, _obj = objects.shift
     assert_equal 'User', type
     assert attrs['updated_at']
     assert_nil attrs['created_at']
@@ -394,10 +387,10 @@ class ActiveRecordTest < Test::Unit::TestCase
 
     assert_equal 1, objects.size
 
-    type, id, attrs, obj = objects.shift
+    type, _id, attrs, _obj = objects.shift
     assert_equal 'Note', type
-    assert_equal nil, attrs['notable_type']
-    assert_equal nil, attrs['notable_id']
+    assert_nil attrs['notable_type']
+    assert_nil attrs['notable_id']
   end
 
   def test_dumps_polymorphic_namespaced_associations
@@ -409,10 +402,10 @@ class ActiveRecordTest < Test::Unit::TestCase
 
     assert_equal 2, objects.size
 
-    type, id, attrs, obj = objects.shift
+    type, _id, _attrs, _obj = objects.shift
     assert_equal 'User::Namespaced', type
 
-    type, id, attrs, obj = objects.shift
+    type, _id, _attrs, _obj = objects.shift
     assert_equal 'Note', type
   end
 
@@ -424,7 +417,7 @@ class ActiveRecordTest < Test::Unit::TestCase
     @dumper.dump @rtomayko.profile
 
     assert_equal 1, objects.size
-    type, id, attrs, obj = objects.shift
+    _type, _id, attrs, _obj = objects.shift
     assert_equal @rtomayko.profile.user_id, attrs["user_id"]
   end
 
@@ -462,8 +455,8 @@ class ActiveRecordTest < Test::Unit::TestCase
     # make sure everything was recreated
     %w[rtomayko kneath tmm1].each do |login|
       user = User.find_by_login(login)
-      assert_not_nil user
-      assert_not_nil user.profile
+      refute_nil user
+      refute_nil user.profile
       assert !user.emails.empty?, "#{login} has no emails" if login != 'tmm1'
     end
   end
@@ -500,8 +493,8 @@ class ActiveRecordTest < Test::Unit::TestCase
     # make sure everything was recreated
     %w[rtomayko kneath tmm1].each do |login|
       user = User.find_by_login(login)
-      assert_not_nil user
-      assert_not_nil user.profile
+      refute_nil user
+      refute_nil user.profile
       assert_equal 'CHANGED', user.profile.name
       assert !user.emails.empty?, "#{login} has no emails" if login != 'tmm1'
     end
@@ -528,7 +521,7 @@ class ActiveRecordTest < Test::Unit::TestCase
     objects.each { |type, id, attrs, obj| User.load_replicant type, id, attrs }
 
     user = User.find_by_login('rtomayko')
-    assert_not_equal dumped_users['rtomayko'].id, user.id
+    refute_equal dumped_users['rtomayko'].id, user.id
 
     User.destroy_all
     User.replicate_id = true
@@ -554,7 +547,7 @@ class ActiveRecordTest < Test::Unit::TestCase
     user = nil
     @loader.listen { |type, id, attrs, obj| user = obj }
     @loader.feed 'User', 1, 'login' => 'rtomayko'
-    assert_not_nil user
+    refute_nil user
     assert !ran_validations, 'validations should not run on save'
   end
 
@@ -575,7 +568,7 @@ class ActiveRecordTest < Test::Unit::TestCase
     user = nil
     @loader.listen { |type, id, attrs, obj| user = obj }
     @loader.feed 'User', 1, 'login' => 'rtomayko'
-    assert_not_nil user
+    refute_nil user
     assert !callbacks, 'callbacks should not run on save'
   end
 
@@ -597,10 +590,5 @@ class ActiveRecordTest < Test::Unit::TestCase
     assert_equal timestamp, user.updated_at
     user = User.find(user.id)
     assert_equal timestamp, user.updated_at
-  end
-
-  def test_enabling_active_record_query_cache
-    ActiveRecord::Base.connection.enable_query_cache!
-    ActiveRecord::Base.connection.disable_query_cache!
   end
 end

@@ -129,12 +129,13 @@ module Replicate
     end
 
     protected
+
     def find_file(path)
       path = "#{path}.rb" unless path =~ /\.rb$/
-      return path if File.exists? path
+      return path if File.exist? path
       $LOAD_PATH.each do |prefix|
         full_path = File.expand_path(path, prefix)
-        return full_path if File.exists? full_path
+        return full_path if File.exist? full_path
       end
       false
     end

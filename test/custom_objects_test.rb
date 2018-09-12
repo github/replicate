@@ -1,6 +1,4 @@
-require 'test/unit'
-require 'stringio'
-require 'replicate'
+require 'test_helper'
 
 class MyCustomObject
   attr_accessor :custom_val
@@ -21,7 +19,7 @@ class MyCustomObject
   end
 end
 
-class CustomObjectsTest < Test::Unit::TestCase
+class CustomObjectsTest < Minitest::Test
   def test_custom_dump
     @dumper = Replicate::Dumper.new
     called = false

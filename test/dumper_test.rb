@@ -1,8 +1,6 @@
-require 'test/unit'
-require 'stringio'
-require 'replicate'
+require 'test_helper'
 
-class DumperTest < Test::Unit::TestCase
+class DumperTest < Minitest::Test
   def setup
     @dumper = Replicate::Dumper.new
   end
@@ -28,7 +26,7 @@ class DumperTest < Test::Unit::TestCase
   end
 
   def test_failure_when_object_not_respond_to_dump_replicant
-    assert_raise(NoMethodError) { @dumper.dump Object.new }
+    assert_raises(NoMethodError) { @dumper.dump Object.new }
   end
 
   def test_never_dumps_objects_more_than_once
@@ -48,9 +46,10 @@ class DumperTest < Test::Unit::TestCase
     io = StringIO.new
     io.set_encoding 'BINARY' if io.respond_to?(:set_encoding)
     @dumper.marshal_to io
-    @dumper.dump object = thing
-    data = Marshal.dump(['Replicate::Object', object.id, object.attributes])
-    assert_equal data, io.string
+    @dumper.dump(object = thing)
+    data = Marshal.load(io.string)
+
+    assert_equal ["Replicate::Object", object.id, object.attributes], data
   end
 
   def test_stats
