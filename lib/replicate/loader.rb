@@ -123,28 +123,12 @@ module Replicate
       end
     end
 
-    # Turn a string into an object by traversing constants. Identical to
-    # ActiveSupport's String#constantize implementation.
-    if Module.method(:const_get).arity == 1
-      # 1.8 implementation doesn't have the inherit argument to const_defined?
-      def constantize(string)
-        string.split('::').inject ::Object do |namespace, name|
-          if namespace.const_defined?(name)
-            namespace.const_get(name)
-          else
-            namespace.const_missing(name)
-          end
-        end
-      end
-    else
-      # 1.9 implement has the inherit argument to const_defined?. Use it!
-      def constantize(string)
-        string.split('::').inject ::Object do |namespace, name|
-          if namespace.const_defined?(name, false)
-            namespace.const_get(name)
-          else
-            namespace.const_missing(name)
-          end
+    def constantize(string)
+      string.split('::').inject ::Object do |namespace, name|
+        if namespace.const_defined?(name, false)
+          namespace.const_get(name)
+        else
+          namespace.const_missing(name)
         end
       end
     end

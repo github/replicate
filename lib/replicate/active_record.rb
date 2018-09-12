@@ -289,11 +289,7 @@ module Replicate
         replicate_natural_key.each do |attribute_name|
           conditions[attribute_name] = attributes[attribute_name.to_s]
         end
-        if ::ActiveRecord::VERSION::MAJOR >= 4
-          where(conditions).first
-        else
-          find(:first, :conditions => conditions)
-        end
+        where(conditions).first
       end
 
       # Update an AR object's attributes and persist to the database without
@@ -309,11 +305,7 @@ module Replicate
 
         # save the instance bypassing all callbacks and validations
         replicate_disable_callbacks instance
-        if ::ActiveRecord::VERSION::MAJOR >= 3
-          instance.save :validate => false
-        else
-          instance.save false
-        end
+        instance.save :validate => false
 
         [instance.id, instance]
       end
@@ -326,23 +318,12 @@ module Replicate
       # instance is effected. There is no way to re-enable callbacks once
       # they've been disabled on an object.
       def replicate_disable_callbacks(instance)
-        if ::ActiveRecord::VERSION::MAJOR >= 3
-          # AR 3.1.x, 3.2.x
-          def instance.run_callbacks(*args); yield if block_given?; end
+        def instance.run_callbacks(*args); yield if block_given?; end
 
-          # AR 3.0.x
-          def instance._run_save_callbacks(*args); yield if block_given?; end
-          def instance._run_create_callbacks(*args); yield if block_given?; end
-          def instance._run_update_callbacks(*args); yield if block_given?; end
-          def instance._run_commit_callbacks(*args); yield if block_given?; end
-        else
-          # AR 2.x
-          def instance.callback(*args)
-          end
-          def instance.record_timestamps
-            false
-          end
-        end
+        def instance._run_save_callbacks(*args); yield if block_given?; end
+        def instance._run_create_callbacks(*args); yield if block_given?; end
+        def instance._run_update_callbacks(*args); yield if block_given?; end
+        def instance._run_commit_callbacks(*args); yield if block_given?; end
       end
 
     end
