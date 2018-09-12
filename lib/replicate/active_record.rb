@@ -318,8 +318,10 @@ module Replicate
       # instance is effected. There is no way to re-enable callbacks once
       # they've been disabled on an object.
       def replicate_disable_callbacks(instance)
+        # AR 5.1 and later only need this method
         def instance.run_callbacks(*args); yield if block_given?; end
 
+        # AR 5.0 runs individual callbacks this way
         def instance._run_save_callbacks(*args); yield if block_given?; end
         def instance._run_create_callbacks(*args); yield if block_given?; end
         def instance._run_update_callbacks(*args); yield if block_given?; end
