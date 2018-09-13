@@ -79,7 +79,7 @@ module Replicate
       end
       objects = objects[0] if objects.size == 1 && objects[0].respond_to?(:to_ary)
       objects.each do |object|
-        next if object.nil? || dumped?(object)
+        next if object.nil? || (object.respond_to?(:replicate_enabled?) && !object.replicate_enabled?) || dumped?(object)
         if object.respond_to?(:dump_replicant)
           args = [self]
           args << opts unless object.method(:dump_replicant).arity == 1

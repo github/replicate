@@ -9,6 +9,12 @@ module Replicate
   module AR
     # Mixin for the ActiveRecord instance.
     module InstanceMethods
+      # Is this object allowed to be replicated?
+      # This is true when the class makes use of the `replicate_enable` macro.
+      def replicate_enabled?
+        self.class.replicate_enabled?
+      end
+
       # Replicate::Dumper calls this method on objects to trigger dumping a
       # replicant object tuple. The default implementation dumps all belongs_to
       # associations, then self, then all has_one associations, then any
@@ -22,23 +28,18 @@ module Replicate
       def dump_replicant(dumper, opts={})
         @replicate_opts = opts
         @replicate_opts[:associations] ||= []
-        @replicate_opts[:omit] ||= []
-        dump_all_association_replicants dumper, :belongs_to
+        @replicate_opts[:attributes] ||= []
+        dump_allowed_association_replicants dumper, :belongs_to
         dumper.write self.class.to_s, id, replicant_attributes, self
-        dump_all_association_replicants dumper, :has_one
-        included_associations.each do |association|
-          dump_association_replicants dumper, association
-        end
+        dump_allowed_association_replicants dumper, :has_one
+        dump_allowed_association_replicants dumper, :has_many
+        dump_allowed_association_replicants dumper, :has_and_belongs_to_many
       end
 
-      # List of associations to explicitly include when dumping this object.
-      def included_associations
-        (self.class.replicate_associations + @replicate_opts[:associations]).uniq
-      end
-
-      # List of attributes and associations to omit when dumping this object.
-      def omitted_attributes
-        (self.class.replicate_omit_attributes + @replicate_opts[:omit]).uniq
+      # List of attributes and associations to allow when dumping this object.
+      # This will always include the class's primary key column.
+      def allowed_attributes
+        ([self.class.primary_key] + self.class.replicate_attributes + @replicate_opts[:attributes]).uniq
       end
 
       # Attributes hash used to persist this object. This consists of simply
@@ -47,11 +48,9 @@ module Replicate
       # the loader will handle translating the id value to the local system's
       # version of the same object.
       def replicant_attributes
-        attributes = self.attributes.dup
+        attributes = self.attributes.dup.slice(*allowed_attributes.map(&:to_s))
 
-        omitted_attributes.each { |omit| attributes.delete(omit.to_s) }
         self.class.reflect_on_all_associations(:belongs_to).each do |reflection|
-          next if omitted_attributes.include?(reflection.name)
           if info = replicate_reflection_info(reflection)
             if replicant_id = info[:replicant_id]
               foreign_key = info[:foreign_key].to_s
@@ -120,15 +119,15 @@ module Replicate
         [self.class.name, id]
       end
 
-      # Dump all associations of a given type.
+      # Dump all configured associations of a given type.
       #
       # dumper           - The Dumper object used to dump additional objects.
       # association_type - :has_one, :belongs_to, :has_many
       #
       # Returns nothing.
-      def dump_all_association_replicants(dumper, association_type)
+      def dump_allowed_association_replicants(dumper, association_type)
         self.class.reflect_on_all_associations(association_type).each do |reflection|
-          next if omitted_attributes.include?(reflection.name)
+          next if !included_associations.include?(reflection.name)
 
           # bail when this object has already been dumped
           next if (info = replicate_reflection_info(reflection)) &&
@@ -138,8 +137,12 @@ module Replicate
           next if (dependent = __send__(reflection.name)).nil?
 
           case dependent
-          when ActiveRecord::Base, Array
+          when ActiveRecord::Base, ActiveRecord::Associations::CollectionProxy, Array
             dumper.dump(dependent)
+
+            if reflection.macro == :has_and_belongs_to_many
+              dump_has_and_belongs_to_many_replicant(dumper, reflection)
+            end
 
             # clear reference to allow GC
             if respond_to?(:association)
@@ -154,23 +157,9 @@ module Replicate
         end
       end
 
-      # Dump objects associated with an AR object through an association name.
-      #
-      # object      - AR object instance.
-      # association - Name of the association whose objects should be dumped.
-      #
-      # Returns nothing.
-      def dump_association_replicants(dumper, association)
-        if reflection = self.class.reflect_on_association(association)
-          objects = __send__(reflection.name)
-          dumper.dump(objects)
-          if reflection.macro == :has_and_belongs_to_many
-            dump_has_and_belongs_to_many_replicant(dumper, reflection)
-          end
-          __send__(reflection.name).reset # clear to allow GC
-        else
-          warn "error: #{self.class}##{association} is invalid"
-        end
+      # List of associations to explicitly include when dumping this object.
+      def included_associations
+        (self.class.replicate_associations + @replicate_opts[:associations]).uniq
       end
 
       # Dump the special Habtm object used to establish many-to-many
@@ -184,6 +173,19 @@ module Replicate
 
     # Mixin for the ActiveRecord class.
     module ClassMethods
+      # Enable replication for this class.
+      def replicate_enable
+        @replicate_enabled = true
+      end
+
+      def replicate_enabled?
+        if defined?(@replicate_enabled)
+          !!@replicate_enabled
+        else
+          false
+        end
+      end
+
       # Set and retrieve list of association names that should be dumped when
       # objects of this class are dumped. This method may be called multiple
       # times to add associations.
@@ -199,7 +201,7 @@ module Replicate
 
       # Set the list of association names to dump to the specific set of values.
       def replicate_associations=(names)
-        @replicate_associations = names.uniq.map { |name| name.to_sym }
+        @replicate_associations = names.uniq
       end
 
       # Compound key used during load to locate existing objects for update.
@@ -242,26 +244,26 @@ module Replicate
         @replicate_id = boolean
       end
 
-      # Set which, if any, attributes should not be dumped. Also works for
+      # Set which attributes should be included in the dump. Also works for
       # associations.
       #
       # attribute_names - Macro style setter.
-      def replicate_omit_attributes(*attribute_names)
-        self.replicate_omit_attributes = attribute_names if attribute_names.any?
+      def replicate_attributes(*attribute_names)
+        self.replicate_attributes += attribute_names if attribute_names.any?
 
-        if defined?(@replicate_omit_attributes) && @replicate_omit_attributes
-          @replicate_omit_attributes
+        if defined?(@replicate_attributes) && @replicate_attributes
+          @replicate_attributes
         else
-          superclass.replicate_omit_attributes
+          superclass.replicate_attributes
         end
       end
 
-      # Set which, if any, attributes should not be dumped. Also works for
+      # Set which attributes should be included in the dump. Also works for
       # associations.
       #
       # attribute_names - Array of attribute name symbols
-      def replicate_omit_attributes=(attribute_names)
-        @replicate_omit_attributes = attribute_names
+      def replicate_attributes=(attribute_names)
+        @replicate_attributes = attribute_names.uniq
       end
 
       # Load an individual record into the database. If the models defines a
@@ -311,7 +313,11 @@ module Replicate
       end
 
       def skip_attribute?(klass, key) # :nodoc:
-        (key == primary_key && !replicate_id) || klass.replicate_omit_attributes.include?(key.to_sym)
+        if key == primary_key
+          !replicate_id
+        else
+          !klass.replicate_attributes.include?(key.to_sym)
+        end
       end
 
       # Disable all callbacks on an ActiveRecord::Base instance. Only the
@@ -371,9 +377,9 @@ module Replicate
     # Load active record and install the extension methods.
     ::ActiveRecord::Base.send :include, InstanceMethods
     ::ActiveRecord::Base.send :extend,  ClassMethods
+    ::ActiveRecord::Base.replicate_attributes   = []
     ::ActiveRecord::Base.replicate_associations = []
     ::ActiveRecord::Base.replicate_natural_key  = []
-    ::ActiveRecord::Base.replicate_omit_attributes  = []
     ::ActiveRecord::Base.replicate_id           = false
   end
 end
