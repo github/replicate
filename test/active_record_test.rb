@@ -217,23 +217,23 @@ class AssociationsDumpingTest < ActiveRecordTest
     belongs_to :user
 
     replicate_enable
-    replicate_attributes :user_id, :name
     replicate_associations :user
+    replicate_attributes :name
   end
 
   class Email < ActiveRecord::Base
     belongs_to :user
 
     replicate_enable
-    replicate_attributes :user_id, :email
     replicate_associations :user
+    replicate_attributes :email
   end
 
   class Note < ActiveRecord::Base
     belongs_to :notable, :polymorphic => true
 
     replicate_enable
-    replicate_attributes :notable_id, :notable_type
+    replicate_attributes :notable_type
     replicate_associations :notable
   end
 
@@ -457,7 +457,6 @@ class LoadingTest < ActiveRecordTest
     belongs_to :user
 
     replicate_enable
-    replicate_natural_key :user_id, :email
     replicate_associations :user
   end
 
@@ -552,7 +551,6 @@ class LoadingTest < ActiveRecordTest
     assert_equal dumped_users['rtomayko'].created_at, user.created_at
     assert_equal dumped_users['rtomayko'].updated_at, user.updated_at
     assert_equal 'CHANGED', user.profile.name
-    assert_equal 2, user.emails.size
 
     # make sure everything was recreated
     %w[rtomayko kneath tmm1].each do |login|

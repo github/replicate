@@ -316,7 +316,7 @@ module Replicate
       def create_or_update_replicant(instance, attributes)
         # write replicated attributes to the instance
         attributes.each do |key, value|
-          next if skip_attribute?(instance.class, key)
+          next if key == primary_key && !replicate_id
           instance.send :write_attribute, key, value
         end
 
@@ -325,14 +325,6 @@ module Replicate
         instance.save :validate => false
 
         [instance.id, instance]
-      end
-
-      def skip_attribute?(klass, key) # :nodoc:
-        if key == primary_key
-          !replicate_id
-        else
-          !klass.allowed_attributes.include?(key.to_sym)
-        end
       end
 
       # Disable all callbacks on an ActiveRecord::Base instance. Only the
@@ -390,6 +382,8 @@ module Replicate
     end
 
     # Load active record and install the extension methods.
+    # This also sets up default values on AR::Base itself so that super-class lookups
+    # will always end up at valid values for each of the available macros
     ::ActiveRecord::Base.send :include, InstanceMethods
     ::ActiveRecord::Base.send :extend,  ClassMethods
     ::ActiveRecord::Base.replicate_attributes   = []
