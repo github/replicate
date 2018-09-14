@@ -181,11 +181,15 @@ module Replicate
         @replicate_enabled = true
       end
 
+      def replicate_enable=(bool=false)
+        @replicate_enabled = bool
+      end
+
       def replicate_enabled?
         if defined?(@replicate_enabled)
           !!@replicate_enabled
         else
-          false
+          superclass.replicate_enabled?
         end
       end
 
@@ -392,5 +396,6 @@ module Replicate
     ::ActiveRecord::Base.replicate_associations = []
     ::ActiveRecord::Base.replicate_natural_key  = []
     ::ActiveRecord::Base.replicate_id           = false
+    ::ActiveRecord::Base.replicate_enable       = false
   end
 end

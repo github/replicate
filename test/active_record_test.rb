@@ -101,6 +101,10 @@ class EnableDumpingTest < ActiveRecordTest
     replicate_enable
   end
 
+  class NestedEmail < Email
+    self.table_name = "emails"
+  end
+
   def test_class_cannot_be_dumped_by_default
     user = User.create! :login => "rtomayko"
     objects = dump(user)
@@ -134,6 +138,16 @@ class EnableDumpingTest < ActiveRecordTest
     email = Email.create! :email => "test@user.com"
     user = User.create! :login => "rtomayko"
     objects = dump(user, email)
+
+    assert_equal 1, objects.size
+
+    dumped = objects[0]
+    assert_equal email, dumped.obj
+  end
+
+  def test_super_class_enable_applies_to_subclasses
+    email = NestedEmail.create! :email => "test@user.com"
+    objects = dump(email)
 
     assert_equal 1, objects.size
 
