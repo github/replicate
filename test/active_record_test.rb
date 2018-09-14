@@ -426,7 +426,7 @@ class LoadingTest < ActiveRecordTest
 
     replicate_enable
     replicate_natural_key :login
-    replicate_attributes :login, :created_at, :updated_at
+    replicate_attributes :created_at, :updated_at
     replicate_associations :profile, :emails
   end
 
@@ -435,7 +435,7 @@ class LoadingTest < ActiveRecordTest
 
     replicate_enable
     replicate_natural_key :user_id
-    replicate_attributes :user_id, :name
+    replicate_attributes :name
     replicate_associations :user
   end
 
@@ -444,7 +444,6 @@ class LoadingTest < ActiveRecordTest
 
     replicate_enable
     replicate_natural_key :user_id, :email
-    replicate_attributes :user_id, :email
     replicate_associations :user
   end
 

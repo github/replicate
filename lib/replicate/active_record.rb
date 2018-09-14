@@ -39,7 +39,10 @@ module Replicate
       # List of attributes and associations to allow when dumping this object.
       # This will always include the class's primary key column.
       def allowed_attributes
-        ([self.class.primary_key] + self.class.replicate_attributes + @replicate_opts[:attributes]).uniq
+        [
+          self.class.allowed_attributes,
+          @replicate_opts[:attributes]
+        ].flatten.uniq
       end
 
       # Attributes hash used to persist this object. This consists of simply
@@ -266,6 +269,14 @@ module Replicate
         @replicate_attributes = attribute_names.uniq
       end
 
+      def allowed_attributes
+        [
+          primary_key,
+          replicate_natural_key,
+          replicate_attributes,
+        ].flatten.uniq
+      end
+
       # Load an individual record into the database. If the models defines a
       # replicate_natural_key then an existing record will be updated if found
       # instead of a new record being created.
@@ -316,7 +327,7 @@ module Replicate
         if key == primary_key
           !replicate_id
         else
-          !klass.replicate_attributes.include?(key.to_sym)
+          !klass.allowed_attributes.include?(key.to_sym)
         end
       end
 
