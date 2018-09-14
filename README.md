@@ -115,23 +115,40 @@ ActiveRecord support works sensibly without customization so this isn't strictly
 necessary to use the `replicate` command. The following sections document the
 available customization macros.
 
+### Enabling and Attribute Dumping
+
+This library takes a dump-nothing stance by default. As such, every ActiveModel class
+that should be dumpable must be configured as such with `replicate_enable`.
+
+From here, the class will need to configure which attributes are allowed to be included
+in the dump. This is done with the `replicate_attributes` macro. The only exception is that
+the primary key is always included in the dump.
+
+```ruby
+class User < ActiveRecord::Base
+  replicate_enable
+  replicate_attributes :full_name, :email
+end
+```
+
+You can also specify a set of attributes to dump from your dump script:
+
+```ruby
+dump User.all, :attributes => [:full_name]
+```
+
 ### Association Dumping
 
-The baked in support adds some more or less sensible default behavior for all
-subclasses of `ActiveRecord::Base` such that dumping an object will bring in
-objects related via `belongs_to` and `has_one` associations.
-
-Unlike 1:1 associations, `has_many` and `has_and_belongs_to_many` associations
-are not automatically included. Doing so would quickly lead to the entire
-database being sucked in. It can be useful to mark specific associations for
-automatic inclusion using the `replicate_associations` macro. For instance,
-to always include `EmailAddress` records belonging to a `User`:
+To also include associated models when dumping a model, use `replicate_associations`
+to configure which associations are allowed. This will work for `belongs_to`,
+`has_many`, and `has_one` associations.
 
 ```ruby
 class User < ActiveRecord::Base
   belongs_to :profile
   has_many   :email_addresses
 
+  replicate_enable
   replicate_associations :email_addresses
 end
 ```
@@ -155,39 +172,21 @@ class User < ActiveRecord::Base
   belongs_to :profile
   has_many   :email_addresses
 
+  replicate_enable
   replicate_natural_key :login
   replicate_associations :email_addresses
 end
 
 class EmailAddress < ActiveRecord::Base
   belongs_to :user
+
+  replicate_enable
   replicate_natural_key :user_id, :email
 end
 ```
 
 Multiple attribute names may be specified to define a compound key. Foreign key
 column attributes (`user_id`) are often included in natural keys.
-
-### Omission of attributes and associations
-
-You might want to exclude some attributes or associations from being dumped. For
-this, use the replicate_omit_attributes macro:
-
-```ruby
-class User < ActiveRecord::Base
-  has_one    :profile
-
-  replicate_omit_attributes :created_at, :profile
-end
-```
-
-You can omit belongs_to associations by omitting the foreign key column.
-
-You may also do this by passing an option in your dump script:
-
-```ruby
-dump User.all, :omit => [:profile]
-```
 
 ### Validations and Callbacks
 

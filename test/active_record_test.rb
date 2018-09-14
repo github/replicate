@@ -1,16 +1,16 @@
 # require a specific AR version.
-version = ENV['AR_VERSION']
-gem 'activerecord', "~> #{version}" if version
-require 'active_record'
-require 'active_record/version'
+version = ENV["AR_VERSION"]
+gem "activerecord", "~> #{version}" if version
+require "active_record"
+require "active_record/version"
 version = ActiveRecord::VERSION::STRING
 warn "Using activerecord #{version}"
 
 # replicate must be loaded after AR
-require 'test_helper'
+require "test_helper"
 
 # create the sqlite db on disk
-dbfile = File.expand_path('../db', __FILE__)
+dbfile = File.expand_path("../db", __FILE__)
 File.unlink dbfile if File.exist?(dbfile)
 ActiveRecord::Base.establish_connection(:adapter => "sqlite3", :database => dbfile)
 
@@ -50,72 +50,431 @@ ActiveRecord::Schema.define do
   end
 
   create_table "namespaced", :force => true
+
+  create_table "domains_users", :force => true do |t|
+    t.integer "user_id"
+    t.integer "domain_id"
+  end
 end
 
-# models
-class User < ActiveRecord::Base
-  has_one  :profile, :dependent => :destroy
-  has_many :emails,  -> { order(:id) }, :dependent => :destroy
-  has_many :notes,   :as => :notable
-  replicate_natural_key :login
-end
 
-class Profile < ActiveRecord::Base
-  belongs_to :user
-  replicate_natural_key :user_id
-end
-
-class Email < ActiveRecord::Base
-  belongs_to :user
-  replicate_natural_key :user_id, :email
-end
-
-class WebPage < ActiveRecord::Base
-  belongs_to :domain, :foreign_key => 'domain_host', :primary_key => 'host'
-end
-
-class Domain < ActiveRecord::Base
-  replicate_natural_key :host
-end
-
-class Note < ActiveRecord::Base
-  belongs_to :notable, :polymorphic => true
-end
-
-class User::Namespaced < ActiveRecord::Base
-  self.table_name = "namespaced"
-end
-
-# The test case loads some fixture data once and uses transaction rollback to
-# reset fixture state for each test's setup.
+# Base test class for setting up fixture data and ensuring each test has a clean
+# base state to work with
 class ActiveRecordTest < Minitest::Test
 
+  DumpedObject = Struct.new(:type, :id, :attrs, :obj)
+
   def setup
-    setup_test_data
-
-    @rtomayko = User.find_by_login('rtomayko')
-    @kneath   = User.find_by_login('kneath')
-    @tmm1     = User.find_by_login('tmm1')
-
-    # Reset all replicate options set in tests to keep
-    # from test setup leakage
-    User.replicate_id = false
-    User.replicate_associations = []
-    User.replicate_omit_attributes = []
-    Profile.replicate_omit_attributes = []
-
     @dumper = Replicate::Dumper.new
     @loader = Replicate::Loader.new
   end
 
-  def setup_test_data
-    User.delete_all
-    Profile.delete_all
-    Email.delete_all
-    Domain.delete_all
-    WebPage.delete_all
-    Note.delete_all
-    User::Namespaced.delete_all
+  def around(&block)
+    ActiveRecord::Base.transaction do
+      block.call
+
+      # Roll everything back at the end of the test for a clean data reset
+      raise ActiveRecord::Rollback
+    end
+  end
+
+  def dump(*objects)
+    results = []
+    @dumper.listen { |type, id, attrs, obj| results << DumpedObject.new(type, id, attrs, obj) }
+
+    @dumper.dump(*objects)
+    results
+  end
+
+  def load(objects)
+    objects.each { |dumped| @loader.feed dumped.type, dumped.id, dumped.attrs }
+  end
+
+end
+
+class EnableDumpingTest < ActiveRecordTest
+
+  class User < ActiveRecord::Base
+  end
+
+  class Email < ActiveRecord::Base
+    replicate_enable
+  end
+
+  class NestedEmail < Email
+    self.table_name = "emails"
+  end
+
+  def test_class_cannot_be_dumped_by_default
+    user = User.create! :login => "rtomayko"
+    objects = dump(user)
+
+    assert_equal 0, objects.size, "Dumped the user when it shouldn't have: #{objects}"
+  end
+
+  def test_class_dumps_when_replicate_enabled
+    email = Email.create! :email => "test@user.com"
+    objects = dump(email)
+
+    assert_equal 1, objects.size
+
+    dumped = objects[0]
+    assert_equal "EnableDumpingTest::Email", dumped.type
+    assert_equal email.id, dumped.id
+    assert_equal email, dumped.obj
+  end
+
+  def test_dumps_multiple_enabled_classes
+    e1 = Email.create! :email => "test1@user.com"
+    e2 = Email.create! :email => "test2@user.com"
+    e3 = Email.create! :email => "test3@user.com"
+
+    objects = dump(e1, e2, e3)
+
+    assert_equal 3, objects.size
+  end
+
+  def test_does_not_dump_disabled_classes_in_list_mixed_with_enabled_classes
+    email = Email.create! :email => "test@user.com"
+    user = User.create! :login => "rtomayko"
+    objects = dump(user, email)
+
+    assert_equal 1, objects.size
+
+    dumped = objects[0]
+    assert_equal email, dumped.obj
+  end
+
+  def test_super_class_enable_applies_to_subclasses
+    email = NestedEmail.create! :email => "test@user.com"
+    objects = dump(email)
+
+    assert_equal 1, objects.size
+
+    dumped = objects[0]
+    assert_equal email, dumped.obj
+  end
+
+end
+
+class AttributeDumpingTest < ActiveRecordTest
+
+  class User < ActiveRecord::Base
+    replicate_enable
+  end
+
+  class UserWithLogin < ActiveRecord::Base
+    self.table_name = "users"
+
+    replicate_enable
+    replicate_attributes :login
+  end
+
+  def setup
+    super
+    User.create! login: "test_user"
+  end
+
+  def test_only_id_is_dumped_by_default
+    user = User.find_by(login: "test_user")
+    objects = dump(user)
+
+    dumped = objects[0]
+    assert_equal({"id" => user.id}, dumped.attrs)
+  end
+
+  def test_explicity_allowed_attributes
+    user = UserWithLogin.find_by(login: "test_user")
+    objects = dump(user)
+
+    dumped = objects[0]
+    assert_equal({"id" => user.id, "login" => "test_user"}, dumped.attrs)
+  end
+
+  def test_dumps_attributes_provided_at_dump_time
+    user = User.find_by(login: "test_user")
+    objects = dump(user, :attributes => [:login])
+
+    dumped = objects[0]
+    assert_equal({"id" => user.id, "login" => "test_user"}, dumped.attrs)
+  end
+
+end
+
+class AssociationsDumpingTest < ActiveRecordTest
+
+  class User < ActiveRecord::Base
+    has_one  :profile, :dependent => :destroy
+    has_many :emails,  -> { order(:id) }, :dependent => :destroy
+    has_many :notes,   :as => :notable
+
+    replicate_enable
+    replicate_attributes :login
+    replicate_associations :profile, :emails, :notes
+  end
+
+  class Profile < ActiveRecord::Base
+    belongs_to :user
+
+    replicate_enable
+    replicate_associations :user
+    replicate_attributes :name
+  end
+
+  class Email < ActiveRecord::Base
+    belongs_to :user
+
+    replicate_enable
+    replicate_associations :user
+    replicate_attributes :email
+  end
+
+  class Note < ActiveRecord::Base
+    belongs_to :notable, :polymorphic => true
+
+    replicate_enable
+    replicate_attributes :notable_type
+    replicate_associations :notable
+  end
+
+  def setup
+    super
+
+    user = User.create! :login => "rtomayko"
+    user.create_profile :name => "Ryan Tomayko", :homepage => "http://tomayko.com"
+    user.emails.create! :email => "ryan@github.com"
+    user.emails.create! :email => "rtomayko@gmail.com"
+  end
+
+  class UserNoAssoc < ActiveRecord::Base
+    self.table_name = "users"
+
+    replicate_enable
+    replicate_attributes :login
+  end
+
+  def test_ignores_associations_by_default
+    user = UserNoAssoc.find_by(login: "rtomayko")
+    objects = dump(user)
+
+    assert_equal 1, objects.size, "Dumped more than just the user. #{objects}"
+  end
+
+  def test_includes_configured_associations_in_order_with_appropriate_attributes
+    user = User.find_by(login: "rtomayko")
+    objects = dump(user)
+
+    assert_equal 4, objects.size, "Did not dump enough objects. Found: #{objects.map(&:type)}"
+
+    dumped = objects.shift
+    assert_equal user, dumped.obj
+
+    # Has One
+    dumped = objects.shift
+    assert_equal "AssociationsDumpingTest::Profile", dumped.type
+    assert_equal [:id, "AssociationsDumpingTest::User", user.id], dumped.attrs["user_id"]
+    assert_equal "Ryan Tomayko", dumped.attrs["name"]
+    assert_nil dumped.attrs["homepage"], "Dumped the homepage when it's not configured to dump"
+
+    # Has Many
+    dumped = objects.shift
+    assert_equal "AssociationsDumpingTest::Email", dumped.type
+    assert_equal [:id, "AssociationsDumpingTest::User", user.id], dumped.attrs["user_id"]
+    assert_equal "ryan@github.com", dumped.attrs["email"]
+
+    dumped = objects.shift
+    assert_equal "AssociationsDumpingTest::Email", dumped.type
+    assert_equal [:id, "AssociationsDumpingTest::User", user.id], dumped.attrs["user_id"]
+    assert_equal "rtomayko@gmail.com", dumped.attrs["email"]
+  end
+
+  def test_belongs_to_added_before_object_being_dumped
+    user = User.find_by(login: "rtomayko")
+    profile = user.profile
+    objects = dump(profile)
+
+    # Belongs To (User)
+    dumped = objects.shift
+    assert_equal user, dumped.obj
+
+    # Ourself
+    dumped = objects.shift
+    assert_equal profile, dumped.obj
+  end
+
+  class UserWithProfile < ActiveRecord::Base
+    self.table_name = "users"
+
+    has_one :profile, :dependent => :destroy, foreign_key: :user_id, class_name: "ProfileFromUser"
+
+    replicate_enable
+  end
+
+  class ProfileFromUser < ActiveRecord::Base
+    self.table_name = "profiles"
+    replicate_enable
+  end
+
+  def test_includes_associations_provided_at_dump_time
+    user = UserWithProfile.find_by(login: "rtomayko")
+    profile = user.profile
+
+    objects = dump(user, :associations => [:profile])
+
+    assert_equal 2, objects.size
+
+    dumped = objects.shift
+    assert_equal user, dumped.obj
+
+    dumped = objects.shift
+    assert_equal profile, dumped.obj
+  end
+
+  def test_dumping_polymorphic_associations
+    user = User.find_by(login: "rtomayko")
+    note = Note.create! :notable => user
+    objects = dump(note)
+
+    dumped = objects.shift
+    assert_equal 'AssociationsDumpingTest::User', dumped.type
+    assert_equal user, dumped.obj
+
+    dumped = objects.find {|o| o.type == "AssociationsDumpingTest::Note" }
+    assert_equal note, dumped.obj
+  end
+
+  def test_dumping_empty_polymorphic_association
+    note = Note.create!
+    objects = dump(note)
+
+    assert_equal 1, objects.size
+
+    dumped = objects.shift
+    assert_equal note, dumped.obj
+    assert_nil dumped.attrs["notable_id"]
+    assert_nil dumped.attrs["notable_type"]
+  end
+
+  class User::Namespaced < ActiveRecord::Base
+    self.table_name = "namespaced"
+
+    has_many :notes, :source => :notable, :source_type => "Note", :foreign_key => :notable_id
+
+    replicate_enable
+    replicate_associations :notes
+  end
+
+  def test_dumping_namespaced_polymorphic_associations
+    user_namespace = User::Namespaced.create!
+    note = Note.create! :notable => user_namespace
+    objects = dump(note)
+    @dumper.dump note
+
+    assert_equal 2, objects.size
+
+    dumped = objects.shift
+    assert_equal 'AssociationsDumpingTest::User::Namespaced', dumped.type
+    assert_equal user_namespace, dumped.obj
+
+    dumped = objects.shift
+    assert_equal 'AssociationsDumpingTest::Note', dumped.type
+    assert_equal note, dumped.obj
+  end
+
+end
+
+class HABTMAssociationTest < ActiveRecordTest
+
+  class User < ActiveRecord::Base
+    has_and_belongs_to_many :domains, :dependent => :destroy
+
+    replicate_enable
+    replicate_attributes :login
+    replicate_associations :domains
+  end
+
+  class Domain < ActiveRecord::Base
+    replicate_enable
+    replicate_attributes :host
+  end
+
+  def test_dumps_and_loads_habtm_associations
+    user = User.create! :login => "test@user.com"
+    domain = user.domains.create! :host => "google.com"
+
+    objects = dump(user)
+
+    assert_equal 3, objects.size
+
+    # Ourself
+    dumped = objects[0]
+    assert_equal user, dumped.obj
+
+    # The Domain
+    dumped = objects[1]
+    assert_equal domain, dumped.obj
+
+    # The HABTM object
+    dumped = objects[2]
+    assert_equal "Replicate::AR::Habtm", dumped.type
+
+    User.destroy_all
+    Domain.destroy_all
+
+    load(objects)
+
+    user = User.find_by(:login => "test@user.com")
+    refute_nil user
+
+    assert_equal 1, user.domains.count
+    assert_equal "google.com", user.domains.first.host
+  end
+
+end
+
+class LoadingTest < ActiveRecordTest
+
+  class User < ActiveRecord::Base
+    has_one  :profile, :dependent => :destroy
+    has_many :emails,  -> { order(:id) }, :dependent => :destroy
+
+    replicate_enable
+    replicate_natural_key :login
+    replicate_attributes :created_at, :updated_at
+    replicate_associations :profile, :emails
+  end
+
+  class Profile < ActiveRecord::Base
+    belongs_to :user
+
+    replicate_enable
+    replicate_natural_key :user_id
+    replicate_attributes :name
+    replicate_associations :user
+  end
+
+  class Email < ActiveRecord::Base
+    belongs_to :user
+
+    replicate_enable
+    replicate_associations :user
+  end
+
+  class WebPage < ActiveRecord::Base
+    belongs_to :domain, :foreign_key => 'domain_host', :primary_key => 'host'
+
+    replicate_enable
+    replicate_attributes :url, :domain_host
+    replicate_associations :domain
+  end
+
+  class Domain < ActiveRecord::Base
+    replicate_enable
+    replicate_attributes :host
+  end
+
+  def setup
+    super
 
     user = User.create! :login => 'rtomayko'
     user.create_profile :name => 'Ryan Tomayko', :homepage => 'http://tomayko.com'
@@ -129,308 +488,16 @@ class ActiveRecordTest < Minitest::Test
     user = User.create! :login => 'tmm1'
     user.create_profile :name => 'tmm1', :homepage => 'https://github.com/tmm1'
 
-    github = Domain.create! :host => 'github.com'
-    WebPage.create! :url => 'http://github.com/about', :domain => github
-  end
-
-  def test_extension_modules_loaded
-    assert User.respond_to?(:load_replicant)
-    assert User.new.respond_to?(:dump_replicant)
-  end
-
-  def test_auto_dumping_belongs_to_associations
-    objects = []
-    @dumper.listen { |type, id, attrs, obj| objects << [type, id, attrs, obj] }
-
-    rtomayko = User.find_by_login('rtomayko')
-    @dumper.dump rtomayko.profile
-
-    assert_equal 2, objects.size
-
-    type, id, attrs, obj = objects.shift
-    assert_equal 'User', type
-    assert_equal rtomayko.id, id
-    assert_equal 'rtomayko', attrs['login']
-    assert_equal rtomayko.created_at, attrs['created_at']
-    assert_equal rtomayko, obj
-
-    type, id, attrs, obj = objects.shift
-    assert_equal 'Profile', type
-    assert_equal rtomayko.profile.id, id
-    assert_equal 'Ryan Tomayko', attrs['name']
-    assert_equal rtomayko.profile, obj
-  end
-
-  def test_omit_dumping_of_attribute
-    objects = []
-    @dumper.listen { |type, id, attrs, obj| objects << [type, id, attrs, obj] }
-
-    User.replicate_omit_attributes :created_at
-    rtomayko = User.find_by_login('rtomayko')
-    @dumper.dump rtomayko
-
-    assert_equal 2, objects.size
-
-    _type, _id, attrs, _obj = objects.shift
-    assert_nil attrs['created_at']
-  end
-
-  def test_omit_dumping_of_association
-    objects = []
-    @dumper.listen { |type, id, attrs, obj| objects << [type, id, attrs, obj] }
-
-    User.replicate_omit_attributes :profile
-    rtomayko = User.find_by_login('rtomayko')
-    @dumper.dump rtomayko
-
-    assert_equal 1, objects.size
-
-    type, _id, _attrs, _obj = objects.shift
-    assert_equal 'User', type
-  end
-
-  def test_dump_and_load_non_standard_foreign_key_association
-    objects = []
-    @dumper.listen { |type, id, attrs, obj| objects << [type, id, attrs, obj] }
-
-    github_about_page = WebPage.find_by_url('http://github.com/about')
-    assert_equal "github.com", github_about_page.domain.host
-    @dumper.dump github_about_page
-
-    WebPage.delete_all
-    Domain.delete_all
-
-    # load everything back up
-    objects.each { |type, id, attrs, obj| @loader.feed type, id, attrs }
-
-    github_about_page = WebPage.find_by_url('http://github.com/about')
-    assert_equal "github.com", github_about_page.domain_host
-    assert_equal "github.com", github_about_page.domain.host
-  end
-
-  def test_auto_dumping_has_one_associations
-    objects = []
-    @dumper.listen { |type, id, attrs, obj| objects << [type, id, attrs, obj] }
-
-    rtomayko = User.find_by_login('rtomayko')
-    @dumper.dump rtomayko
-
-    assert_equal 2, objects.size
-
-    type, id, attrs, obj = objects.shift
-    assert_equal 'User', type
-    assert_equal rtomayko.id, id
-    assert_equal 'rtomayko', attrs['login']
-    assert_equal rtomayko.created_at, attrs['created_at']
-    assert_equal rtomayko, obj
-
-    type, id, attrs, obj = objects.shift
-    assert_equal 'Profile', type
-    assert_equal rtomayko.profile.id, id
-    assert_equal 'Ryan Tomayko', attrs['name']
-    assert_equal [:id, 'User', rtomayko.id], attrs['user_id']
-    assert_equal rtomayko.profile, obj
-  end
-
-  def test_auto_dumping_does_not_fail_on_polymorphic_associations
-    objects = []
-    @dumper.listen { |type, id, attrs, obj| objects << [type, id, attrs, obj] }
-
-    rtomayko = User.find_by_login('rtomayko')
-    note = Note.create!(:notable => rtomayko)
-    @dumper.dump note
-
-    assert_equal 3, objects.size
-
-    type, id, _attrs, _obj = objects.shift
-    assert_equal 'User', type
-    assert_equal rtomayko.id, id
-
-    type, id, attrs, obj = objects.shift
-    assert_equal 'Profile', type
-
-    type, id, attrs, obj = objects.shift
-    assert_equal 'Note', type
-    assert_equal note.id, id
-    assert_equal note.notable_type, attrs['notable_type']
-    assert_equal attrs["notable_id"], [:id, 'User', rtomayko.id]
-    assert_equal note, obj
-  end
-
-  def test_dumping_has_many_associations
-    objects = []
-    @dumper.listen { |type, id, attrs, obj| objects << [type, id, attrs, obj] }
-
-    User.replicate_associations :emails
-    rtomayko = User.find_by_login('rtomayko')
-    @dumper.dump rtomayko
-
-    assert_equal 4, objects.size
-
-    type, id, attrs, obj = objects.shift
-    assert_equal 'User', type
-    assert_equal rtomayko.id, id
-    assert_equal 'rtomayko', attrs['login']
-    assert_equal rtomayko.created_at, attrs['created_at']
-    assert_equal rtomayko, obj
-
-    type, id, attrs, obj = objects.shift
-    assert_equal 'Profile', type
-    assert_equal rtomayko.profile.id, id
-    assert_equal 'Ryan Tomayko', attrs['name']
-    assert_equal rtomayko.profile, obj
-
-    type, id, attrs, obj = objects.shift
-    assert_equal 'Email', type
-    assert_equal 'ryan@github.com', attrs['email']
-    assert_equal [:id, 'User', rtomayko.id], attrs['user_id']
-    assert_equal rtomayko.emails.first, obj
-
-    type, id, attrs, obj = objects.shift
-    assert_equal 'Email', type
-    assert_equal 'rtomayko@gmail.com', attrs['email']
-    assert_equal [:id, 'User', rtomayko.id], attrs['user_id']
-    assert_equal rtomayko.emails.last, obj
-  end
-
-  def test_dumping_associations_at_dump_time
-    objects = []
-    @dumper.listen { |type, id, attrs, obj| objects << [type, id, attrs, obj] }
-
-    rtomayko = User.find_by_login('rtomayko')
-    @dumper.dump rtomayko, :associations => [:emails], :omit => [:profile]
-
-    assert_equal 3, objects.size
-
-    type, id, attrs, obj = objects.shift
-    assert_equal 'User', type
-    assert_equal rtomayko.id, id
-    assert_equal 'rtomayko', attrs['login']
-    assert_equal rtomayko.created_at, attrs['created_at']
-    assert_equal rtomayko, obj
-
-    type, id, attrs, obj = objects.shift
-    assert_equal 'Email', type
-    assert_equal 'ryan@github.com', attrs['email']
-    assert_equal [:id, 'User', rtomayko.id], attrs['user_id']
-    assert_equal rtomayko.emails.first, obj
-
-    type, id, attrs, obj = objects.shift
-    assert_equal 'Email', type
-    assert_equal 'rtomayko@gmail.com', attrs['email']
-    assert_equal [:id, 'User', rtomayko.id], attrs['user_id']
-    assert_equal rtomayko.emails.last, obj
-  end
-
-  def test_dumping_many_associations_at_dump_time
-    objects = []
-    @dumper.listen { |type, id, attrs, obj| objects << [type, id, attrs, obj] }
-
-    users = User.where(:login => %w[rtomayko kneath]).all
-    @dumper.dump users, :associations => [:emails], :omit => [:profile]
-
-    assert_equal 5, objects.size
-    assert_equal ['Email', 'Email', 'Email', 'User', 'User'], objects.map { |type,_,_| type }.sort
-  end
-
-  def test_omit_attributes_at_dump_time
-    objects = []
-    @dumper.listen { |type, id, attrs, obj| objects << [type, id, attrs, obj] }
-
-    rtomayko = User.find_by_login('rtomayko')
-    @dumper.dump rtomayko, :omit => [:created_at]
-
-    type, _id, attrs, _obj = objects.shift
-    assert_equal 'User', type
-    assert attrs['updated_at']
-    assert_nil attrs['created_at']
-  end
-
-  def test_dumping_polymorphic_associations
-    objects = []
-    @dumper.listen { |type, id, attrs, obj| objects << [type, id, attrs, obj] }
-
-    User.replicate_associations :notes
-    rtomayko = User.find_by_login('rtomayko')
-    note = Note.create!(:notable => rtomayko)
-    @dumper.dump rtomayko
-
-    assert_equal 3, objects.size
-
-    type, id, attrs, obj = objects.shift
-    assert_equal 'User', type
-    assert_equal rtomayko.id, id
-    assert_equal 'rtomayko', attrs['login']
-    assert_equal rtomayko.created_at, attrs['created_at']
-    assert_equal rtomayko, obj
-
-    type, id, attrs, obj = objects.shift
-    assert_equal 'Profile', type
-    assert_equal rtomayko.profile.id, id
-    assert_equal 'Ryan Tomayko', attrs['name']
-    assert_equal rtomayko.profile, obj
-
-    type, id, attrs, obj = objects.shift
-    assert_equal 'Note', type
-    assert_equal note.notable_type, attrs['notable_type']
-    assert_equal [:id, 'User', rtomayko.id], attrs['notable_id']
-    assert_equal rtomayko.notes.first, obj
-
-  end
-
-  def test_dumping_empty_polymorphic_associations
-    objects = []
-    @dumper.listen { |type, id, attrs, obj| objects << [type, id, attrs, obj] }
-
-    note = Note.create!()
-    @dumper.dump note
-
-    assert_equal 1, objects.size
-
-    type, _id, attrs, _obj = objects.shift
-    assert_equal 'Note', type
-    assert_nil attrs['notable_type']
-    assert_nil attrs['notable_id']
-  end
-
-  def test_dumps_polymorphic_namespaced_associations
-    objects = []
-    @dumper.listen { |type, id, attrs, obj| objects << [type, id, attrs, obj] }
-
-    note = Note.create! :notable => User::Namespaced.create!
-    @dumper.dump note
-
-    assert_equal 2, objects.size
-
-    type, _id, _attrs, _obj = objects.shift
-    assert_equal 'User::Namespaced', type
-
-    type, _id, _attrs, _obj = objects.shift
-    assert_equal 'Note', type
-  end
-
-  def test_skips_belongs_to_information_if_omitted
-    objects = []
-    @dumper.listen { |type, id, attrs, obj| objects << [type, id, attrs, obj] }
-
-    Profile.replicate_omit_attributes :user
-    @dumper.dump @rtomayko.profile
-
-    assert_equal 1, objects.size
-    _type, _id, attrs, _obj = objects.shift
-    assert_equal @rtomayko.profile.user_id, attrs["user_id"]
+    github = Domain.create! :host => "github.com"
+    WebPage.create! :url => "http://github.com/about", :domain => github
   end
 
   def test_loading_everything
-    objects = []
-    @dumper.listen { |type, id, attrs, obj| objects << [type, id, attrs, obj] }
-
-    # dump all users and associated objects and destroy
-    User.replicate_associations :emails
     dumped_users = {}
+    objects = []
     %w[rtomayko kneath tmm1].each do |login|
       user = User.find_by_login(login)
-      @dumper.dump user
+      objects += dump(user)
       user.destroy
       dumped_users[login] = user
     end
@@ -441,8 +508,7 @@ class ActiveRecordTest < Minitest::Test
     sr.create_profile :name => 'Simon Rozet'
     sr.emails.create :email => 'sr@github.com'
 
-    # load everything back up
-    objects.each { |type, id, attrs, obj| @loader.feed type, id, attrs }
+    load(objects)
 
     # verify attributes are set perfectly again
     user = User.find_by_login('rtomayko')
@@ -461,23 +527,20 @@ class ActiveRecordTest < Minitest::Test
     end
   end
 
+  # This also tests `replicate_natural_key`
   def test_loading_with_existing_records
     objects = []
-    @dumper.listen { |type, id, attrs, obj| objects << [type, id, attrs, obj] }
-
-    # dump all users and associated objects and destroy
-    User.replicate_associations :emails
     dumped_users = {}
+
     %w[rtomayko kneath tmm1].each do |login|
       user = User.find_by_login(login)
       user.profile.update_attribute :name, 'CHANGED'
-      @dumper.dump user
+      objects += dump(user)
       dumped_users[login] = user
     end
     assert_equal 9, objects.size
 
-    # load everything back up
-    objects.each { |type, id, attrs, obj| @loader.feed type, id, attrs }
+    load(objects)
 
     # ensure additional objects were not created
     assert_equal 3, User.count
@@ -488,7 +551,6 @@ class ActiveRecordTest < Minitest::Test
     assert_equal dumped_users['rtomayko'].created_at, user.created_at
     assert_equal dumped_users['rtomayko'].updated_at, user.updated_at
     assert_equal 'CHANGED', user.profile.name
-    assert_equal 2, user.emails.size
 
     # make sure everything was recreated
     %w[rtomayko kneath tmm1].each do |login|
@@ -500,74 +562,111 @@ class ActiveRecordTest < Minitest::Test
     end
   end
 
-  def test_loading_with_replicating_id
-    objects = []
-    @dumper.listen do |type, id, attrs, obj|
-      objects << [type, id, attrs, obj] if type == 'User'
-    end
+  def test_dumping_and_loading_associations_with_non_standard_keys
+    github_about_page = WebPage.find_by_url('http://github.com/about')
+    assert_equal "github.com", github_about_page.domain.host
+    objects = dump(github_about_page)
 
+    assert_equal 2, objects.size
+
+    WebPage.delete_all
+    Domain.delete_all
+
+    load(objects)
+
+    github_about_page = WebPage.find_by_url('http://github.com/about')
+    assert_equal "github.com", github_about_page.domain_host
+    assert_equal "github.com", github_about_page.domain.host
+  end
+
+  class User_TestReplicateId < ActiveRecord::Base
+    self.table_name = "users"
+
+    replicate_enable
+    replicate_attributes :login
+  end
+
+  def test_loading_with_replicating_id
+    User_TestReplicateId.replicate_id = false
+
+    objects = []
     dumped_users = {}
     %w[rtomayko kneath tmm1].each do |login|
-      user = User.find_by_login(login)
-      @dumper.dump user
+      user = User_TestReplicateId.find_by_login(login)
+      objects += dump(user)
       dumped_users[login] = user
     end
     assert_equal 3, objects.size
 
-    User.destroy_all
-    User.replicate_id = false
+    User_TestReplicateId.destroy_all
+    User_TestReplicateId.replicate_id = false
 
-    # load everything back up
-    objects.each { |type, id, attrs, obj| User.load_replicant type, id, attrs }
+    # Load everything to see that ids changed from old to new
+    load(objects)
 
-    user = User.find_by_login('rtomayko')
+    user = User_TestReplicateId.find_by_login('rtomayko')
     refute_equal dumped_users['rtomayko'].id, user.id
 
-    User.destroy_all
-    User.replicate_id = true
+    # Now we turn on replicate_id and see that the ids of the new
+    # imported records match what was dumped
+    User_TestReplicateId.destroy_all
+    User_TestReplicateId.replicate_id = true
 
-    # load everything back up
-    objects.each { |type, id, attrs, obj| User.load_replicant type, id, attrs }
+    load(objects)
 
-    user = User.find_by_login('rtomayko')
+    user = User_TestReplicateId.find_by_login('rtomayko')
     assert_equal dumped_users['rtomayko'].id, user.id
+  end
+
+  class User_Validations < ActiveRecord::Base
+    self.table_name = "users"
+
+    replicate_enable
+    replicate_attributes :login
   end
 
   def test_loader_saves_without_validations
     # note when a record is saved with validations
     ran_validations = false
-    User.class_eval { validate { ran_validations = true } }
+    User_Validations.class_eval { validate { ran_validations = true } }
 
     # check our assumptions
-    user = User.create(:login => 'defunkt')
+    user = User_Validations.create(:login => 'defunkt')
     assert ran_validations, "should run validations here"
     ran_validations = false
 
     # load one and verify validations are not run
     user = nil
     @loader.listen { |type, id, attrs, obj| user = obj }
-    @loader.feed 'User', 1, 'login' => 'rtomayko'
+    @loader.feed 'LoadingTest::User_Validations', 1, 'login' => 'rtomayko'
     refute_nil user
     assert !ran_validations, 'validations should not run on save'
+  end
+
+  class User_Callbacks < ActiveRecord::Base
+    self.table_name = "users"
+
+    replicate_enable
+    replicate_attributes :login
   end
 
   def test_loader_saves_without_callbacks
     # note when a record is saved with callbacks
     callbacks = false
-    User.class_eval { after_save { callbacks = true } }
-    User.class_eval { after_create { callbacks = true } }
-    User.class_eval { after_update { callbacks = true } }
-    User.class_eval { after_commit { callbacks = true } }
+    User_Callbacks.class_eval { after_save { callbacks = true } }
+    User_Callbacks.class_eval { after_create { callbacks = true } }
+    User_Callbacks.class_eval { after_update { callbacks = true } }
+    User_Callbacks.class_eval { after_commit { callbacks = true } }
 
     # check our assumptions
-    user = User.create(:login => 'defunkt')
+    user = User_Callbacks.create(:login => 'defunkt')
     assert callbacks, "should run callbacks here"
     callbacks = false
 
     # load one and verify validations are not run
     user = nil
     @loader.listen { |type, id, attrs, obj| user = obj }
-    @loader.feed 'User', 1, 'login' => 'rtomayko'
+    @loader.feed 'LoadingTest::User_Callbacks', 1, 'login' => 'rtomayko'
     refute_nil user
     assert !callbacks, 'callbacks should not run on save'
   end
@@ -576,7 +675,7 @@ class ActiveRecordTest < Minitest::Test
     timestamp = Time.at((Time.now - (24 * 60 * 60)).to_i)
     user = nil
     @loader.listen { |type, id, attrs, obj| user = obj }
-    @loader.feed 'User', 23, 'login' => 'brianmario', 'created_at' => timestamp
+    @loader.feed 'LoadingTest::User', 23, 'login' => 'brianmario', 'created_at' => timestamp
     assert_equal timestamp, user.created_at
     user = User.find(user.id)
     assert_equal timestamp, user.created_at
@@ -586,7 +685,7 @@ class ActiveRecordTest < Minitest::Test
     timestamp = Time.at((Time.now - (24 * 60 * 60)).to_i)
     user = nil
     @loader.listen { |type, id, attrs, obj| user = obj }
-    @loader.feed 'User', 29, 'login' => 'rtomayko', 'updated_at' => timestamp
+    @loader.feed 'LoadingTest::User', 29, 'login' => 'rtomayko', 'updated_at' => timestamp
     assert_equal timestamp, user.updated_at
     user = User.find(user.id)
     assert_equal timestamp, user.updated_at
